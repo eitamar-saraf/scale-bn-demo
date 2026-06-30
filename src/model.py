@@ -106,13 +106,19 @@ class FiLM(nn.Module):
 # ----------------------------- the encoder -----------------------------
 class MiniPointEncoder(nn.Module):
     def __init__(self, norm_mode="global", norm_layer="bn", film=False,
-                 embed_dim=128, enc_dim=256, num_group=64, group_size=16):
+                 embed_dim=128, enc_dim=256, num_group=64, group_size=16,
+                 scale_anchor=True):
         super().__init__()
         assert norm_mode in ("global", "unit_bb")
         self.norm_mode, self.norm_layer, self.use_film = norm_mode, norm_layer, film
+        # scale_anchor: keep the fixed reference (constant 0.4 color + first-conv bias) that lets
+        # a scale-invariant GroupNorm leak a faint absolute-scale cue under global norm. Set False
+        # to remove both anchors (color->0, first-conv bias off) — first_conv becomes pure scaling
+        # s*A, so GroupNorm cancels s exactly and the leak should vanish (ablation of the leak).
+        self.scale_anchor = scale_anchor
         self.group = Group(num_group, group_size)
         self.first_conv = nn.Sequential(
-            nn.Conv1d(6, 128, 1), norm1d(norm_layer, 128), nn.ReLU(True), nn.Conv1d(128, 256, 1))
+            nn.Conv1d(6, 128, 1, bias=scale_anchor), norm1d(norm_layer, 128), nn.ReLU(True), nn.Conv1d(128, 256, 1))
         self.second_conv = nn.Sequential(
             nn.Conv1d(512, 512, 1), norm1d(norm_layer, 512), nn.ReLU(True), nn.Conv1d(512, enc_dim, 1))
         self.head = nn.Sequential(nn.Linear(enc_dim, 256), nn.GELU(), nn.Linear(256, embed_dim))
@@ -146,7 +152,7 @@ class MiniPointEncoder(nn.Module):
         if log_size is not None:
             log_size = log_size.float()
         xyz = self.normalize(pts)
-        color = torch.full_like(xyz, 0.4)            # constant color, like the real pipeline
+        color = torch.full_like(xyz, 0.4 if self.scale_anchor else 0.0)  # constant color (the fixed anchor)
         centers, feats = self.group(xyz, color)      # feats [B,G,k,6]
         B, G, k, _ = feats.shape
         x = feats.reshape(B * G, k, 6).transpose(1, 2)        # [B*G,6,k]
