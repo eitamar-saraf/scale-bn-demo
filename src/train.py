@@ -52,7 +52,8 @@ def evaluate(model, eval_pts, eval_fam, eval_size, teacher, size_pairs, device):
 
 def train_variant(cfg, n_items=3072, steps=700, batch=48, eval_every=20,
                   lr=2e-3, seed=0, device="cpu", log=print,
-                  n_points=768, outlier_frac=0.0004, outlier_mult=(20.0, 2000.0)):
+                  n_points=768, outlier_frac=0.0004, outlier_mult=(20.0, 2000.0),
+                  snapshot=False):
     torch.manual_seed(seed); np.random.seed(seed)
     ds = ShapeDataset(n_items=n_items, n_points=n_points, outlier_frac=outlier_frac,
                       outlier_mult=outlier_mult, seed=seed, with_outliers=True)
@@ -83,21 +84,31 @@ def train_variant(cfg, n_items=3072, steps=700, batch=48, eval_every=20,
     opt = torch.optim.Adam(model.parameters(), lr=lr)
 
     hist = {k: [] for k in ["step", "bn_running_var", "mrr", "pcpc", "size_margin", "batch_outlier", "loss"]}
+    # per-STEP series (dense) — for the loss/grad-norm "everything looked fine" plot
+    hist["loss_step"] = []; hist["grad_step"] = []
+    snaps = {}                                            # step -> cpu state_dict copy (if snapshot)
     for step in range(1, steps + 1):
         idx = torch.randint(0, len(ds), (batch,), generator=rng_b)   # WITH replacement
         pts = pts_all[idx]; size = size_all[idx]; fam = fam_all[idx]
         emb = model(pts, torch.log(size))
         T = teacher.embed(fam.numpy(), size.cpu().numpy()).to(device)
         loss = clip_loss(emb, T)
-        opt.zero_grad(); loss.backward(); opt.step()
+        opt.zero_grad(); loss.backward()
+        gnorm = float(torch.sqrt(sum(p.grad.detach().pow(2).sum() for p in model.parameters()
+                                     if p.grad is not None)).item())
+        opt.step()
+        hist["loss_step"].append(float(loss.item())); hist["grad_step"].append(gnorm)
         if step % eval_every == 0 or step == 1:
             mrr, pcpc, sm = evaluate(model, eval_pts, eval_fam, eval_size, teacher, size_pairs, device)
             rv = float("nan")
             if cfg["norm_layer"] == "bn":
                 rv = model.first_conv[1].running_var.mean().item()
             b_out = float(torch.from_numpy(ds.is_outlier)[idx].float().mean())
-            for k, v in zip(hist, [step, rv, mrr, pcpc, sm, b_out, float(loss.item())]):
+            for k, v in zip(["step", "bn_running_var", "mrr", "pcpc", "size_margin", "batch_outlier", "loss"],
+                            [step, rv, mrr, pcpc, sm, b_out, float(loss.item())]):
                 hist[k].append(v)
+            if snapshot:
+                snaps[step] = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
             log(f"  step {step:4d}  loss {loss.item():.3f}  rv {rv:>10.3e}  "
                 f"MRR {mrr:.3f}  pcpc {pcpc:.3f}  size_margin {sm:.4f}")
-    return hist, model
+    return (hist, model, snaps) if snapshot else (hist, model)
