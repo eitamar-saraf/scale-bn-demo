@@ -57,11 +57,14 @@ def plot_all(results, data_stats, out="figures/four_variants.png"):
 
 
 def plot_bn_anticorrelation(hist, out="figures/bn_anticorrelation.png"):
-    """global+BN only: overlay running_var (log, left) and eval MRR (right) on one axis
-    so the anti-correlation is visible — every running_var spike == an MRR collapse."""
+    """global+BN only: overlay running_var (log, left), eval MRR (right) and training
+    loss (far right) on one plot. The running_var and MRR see-saw in lock-step, while
+    the loss glides smoothly down — oblivious to the whole thing."""
     step = np.array(hist["step"]); rv = np.array(hist["bn_running_var"]); mrr = np.array(hist["mrr"])
-    c_rv, c_mrr = "#c0392b", "#1f4e79"
-    fig, ax1 = plt.subplots(figsize=(13, 5.5))
+    loss = np.array(hist["loss"]) if "loss" in hist else None
+    c_rv, c_mrr, c_loss = "#c0392b", "#1f4e79", "#6b7280"
+    fig, ax1 = plt.subplots(figsize=(13.5, 5.8))
+    fig.subplots_adjust(right=0.84)   # room for two right-hand axes
 
     # shade the poisoned checkpoints (running_var well above the clean floor)
     thr = 0.1
@@ -79,12 +82,24 @@ def plot_bn_anticorrelation(hist, out="figures/bn_anticorrelation.png"):
     ax2.set_ylabel("eval retrieval MRR", color=c_mrr); ax2.tick_params(axis="y", labelcolor=c_mrr)
     ax2.set_ylim(0, max(0.4, float(mrr.max()) * 1.15))
 
+    if loss is not None:
+        ax3 = ax1.twinx()
+        ax3.spines["right"].set_position(("outward", 58))
+        ax3.plot(step, loss, color=c_loss, lw=2.2, ls="--", marker="^", ms=3, zorder=2,
+                 label="training loss")
+        ax3.set_ylabel("training loss", color=c_loss); ax3.tick_params(axis="y", labelcolor=c_loss)
+        ax3.set_ylim(0, float(loss.max()) * 1.1)
+
     r = float(np.corrcoef(np.log10(rv), mrr)[0, 1])      # anti-correlation, quantified
-    ax1.set_title("global+BN — running_var spike (red ↑, shaded)  ⇔  eval MRR collapse (blue ↓)\n"
-                  f"Pearson corr(log running_var, MRR) = {r:+.2f}   ·   the training loss sees none of it")
-    h1, l1 = ax1.get_legend_handles_labels(); h2, l2 = ax2.get_legend_handles_labels()
-    ax1.legend(h1 + h2, l1 + l2, loc="center left", framealpha=0.9)
-    fig.tight_layout(); fig.savefig(out, dpi=140, facecolor="white", bbox_inches="tight")
+    ax1.set_title("global+BN — the training loss (gray) glides smoothly down, oblivious;\n"
+                  f"running_var (red ↑, shaded) and eval MRR (blue ↓) see-saw in lock-step  ·  "
+                  f"corr(log running_var, MRR) = {r:+.2f}")
+    handles = ax1.get_legend_handles_labels()[0] + ax2.get_legend_handles_labels()[0]
+    labels = ax1.get_legend_handles_labels()[1] + ax2.get_legend_handles_labels()[1]
+    if loss is not None:
+        handles += ax3.get_legend_handles_labels()[0]; labels += ax3.get_legend_handles_labels()[1]
+    ax1.legend(handles, labels, loc="center left", framealpha=0.9)
+    fig.savefig(out, dpi=140, facecolor="white", bbox_inches="tight")
     print(f"saved {out}  (corr={r:+.2f})")
 
 

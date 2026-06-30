@@ -82,7 +82,7 @@ def train_variant(cfg, n_items=3072, steps=700, batch=48, eval_every=20,
         model.global_div = c.abs().amax(dim=(1, 2)).median().detach()
     opt = torch.optim.Adam(model.parameters(), lr=lr)
 
-    hist = {k: [] for k in ["step", "bn_running_var", "mrr", "pcpc", "size_margin", "batch_outlier"]}
+    hist = {k: [] for k in ["step", "bn_running_var", "mrr", "pcpc", "size_margin", "batch_outlier", "loss"]}
     for step in range(1, steps + 1):
         idx = torch.randint(0, len(ds), (batch,), generator=rng_b)   # WITH replacement
         pts = pts_all[idx]; size = size_all[idx]; fam = fam_all[idx]
@@ -96,7 +96,7 @@ def train_variant(cfg, n_items=3072, steps=700, batch=48, eval_every=20,
             if cfg["norm_layer"] == "bn":
                 rv = model.first_conv[1].running_var.mean().item()
             b_out = float(torch.from_numpy(ds.is_outlier)[idx].float().mean())
-            for k, v in zip(hist, [step, rv, mrr, pcpc, sm, b_out]):
+            for k, v in zip(hist, [step, rv, mrr, pcpc, sm, b_out, float(loss.item())]):
                 hist[k].append(v)
             log(f"  step {step:4d}  loss {loss.item():.3f}  rv {rv:>10.3e}  "
                 f"MRR {mrr:.3f}  pcpc {pcpc:.3f}  size_margin {sm:.4f}")
