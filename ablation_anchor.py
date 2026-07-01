@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 import numpy as np, torch
 from src.train import train_variant
 
-STEPS, NG = 700, 48
+STEPS, NG = 1600, 48
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
 runs = {
@@ -29,8 +29,8 @@ print(f"device={device}  steps={STEPS}\n")
 results = {}
 for name, cfg in runs.items():
     print(f"== {name}  {cfg} ==")
-    hist, _ = train_variant(cfg, steps=STEPS, seed=0, device=device,
-                            eval_every=max(8, STEPS // 50))
+    hist, _ = train_variant(cfg, n_items=8000, steps=STEPS, seed=0, device=device,
+                            eval_every=20)
     results[name] = hist
 
 print("\n=== ABLATION RESULT (last-3-eval mean) ===")

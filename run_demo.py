@@ -59,8 +59,8 @@ def main():
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    steps = args.steps or (150 if args.quick else 700)
-    n_items = 800 if args.quick else 3072
+    steps = args.steps or (150 if args.quick else 1600)
+    n_items = 800 if args.quick else 8000
     print(f"device={device}  steps={steps}  n_items={n_items}\n")
 
     print("== data diagnostic (why outliers poison the BN) ==")
@@ -70,7 +70,7 @@ def main():
     for name, cfg in VARIANTS.items():
         print(f"\n== training {name}  {cfg} ==")
         hist, _ = train_variant(cfg, n_items=n_items, steps=steps, seed=args.seed,
-                                device=device, eval_every=max(8, steps // 50))
+                                device=device, eval_every=max(10, steps // 80))
         results[name] = hist
 
     plot_all(results, data_stats=None)

@@ -52,7 +52,7 @@ def evaluate(model, eval_pts, eval_fam, eval_size, teacher, size_pairs, device):
 
 def train_variant(cfg, n_items=3072, steps=700, batch=48, eval_every=20,
                   lr=2e-3, seed=0, device="cpu", log=print,
-                  n_points=768, outlier_frac=0.0004, outlier_mult=(20.0, 2000.0),
+                  n_points=768, outlier_frac=0.00015, outlier_mult=(30.0, 6000.0),
                   snapshot=False):
     torch.manual_seed(seed); np.random.seed(seed)
     ds = ShapeDataset(n_items=n_items, n_points=n_points, outlier_frac=outlier_frac,

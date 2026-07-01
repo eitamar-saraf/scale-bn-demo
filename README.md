@@ -16,7 +16,12 @@ python run_demo.py            # ~a few minutes on CPU
 python run_demo.py --quick    # fast smoke run
 ```
 
-Outputs three figures in `figures/`.
+Outputs the figures in `figures/`. Two companion scripts add the rest:
+
+```bash
+python ablation_anchor.py     # the leak ablation: remove the color+bias anchor
+python investigation_story.py # the checkpoint-diff "breakthrough" figure
+```
 
 ---
 
@@ -45,23 +50,23 @@ The first three isolate the mechanism; the fourth is the full proposed fix — d
 (scale-invariant geometry) from **scale** (an explicit `log(size) → Fourier → MLP → FiLM`
 conditioning path), so nothing rides on raw activation magnitudes.
 
-### Measured results (700 steps, CPU; your numbers will vary slightly)
+### Measured results (1600 steps, CPU; your numbers will vary slightly)
 
 | variant | retrieval MRR | 3mm-vs-4mm margin | running_var | read |
 |---|---|---|---|---|
-| `global+BN` | **swings 0.02 ↔ 0.34** | 0.17 | **oscillates 0.006 ↔ 200** | learns a good baseline (rides with GroupNorm most checkpoints), but collapses to random whenever an outlier batch just poisoned the buffer — ~8 sharp drops in 700 steps |
-| `global+GN` | 0.33 (stable) | 0.35 | — (no buffer) | **stable**; keeps usable scale — GroupNorm alone already helps |
-| `unitbb+GN` | 0.09 (stable) | **0.00** | — | stable but **scale-blind**, and retrieval suffers because the teacher rewards size |
-| `unitbb+GN+FiLM` | **0.37** (stable) | **0.88** | — | **best on both** — stable, and far better size discrimination |
+| `global+BN` | **swings 0.03 ↔ 0.34** | 0.29 | **oscillates 0.006 ↔ 2.7** | learns a good baseline (rides with GroupNorm most checkpoints), but collapses to random whenever an outlier batch just poisoned the buffer — several sharp drops over the run |
+| `global+GN` | 0.34 (stable) | 0.46 | — (no buffer) | **stable**; keeps usable scale — GroupNorm alone already helps |
+| `unitbb+GN` | 0.10 (stable) | **0.00** | — | stable but **scale-blind**, and retrieval suffers because the teacher rewards size |
+| `unitbb+GN+FiLM` | **0.38** (stable) | **0.91** | — | **best on both** — stable, and far better size discrimination |
 
 Two takeaways the demo makes concrete:
-1. `global+BN` reaches the *same* clean-checkpoint MRR as GroupNorm (~0.3) — the model trains fine —
+1. `global+BN` reaches the *same* clean-checkpoint MRR as GroupNorm (~0.34) — the model trains fine —
    but its eval metric is **anti-correlated with `running_var`**: adjacent checkpoints swing
-   ~30 points (0.34 → 0.02) purely on whether a scale-outlier batch recently poisoned the buffer.
+   ~30 points (0.34 → 0.03) purely on whether a scale-outlier batch recently poisoned the buffer.
    That is the "metric trends up, then a massive drop" lottery, with the loss curve healthy
-   throughout. (`MRR-vol ≈ 0.10` for `global+BN` vs `≈ 0.02` for the stable variants.)
+   throughout. (`MRR-vol ≈ 0.13` for `global+BN` vs `≈ 0.01` for the stable variants.)
 2. GroupNorm alone fixes *stability* but unit-box normalization *erases* scale — so the explicit
-   FiLM conditioning is what restores (and improves) size discrimination, 0.00 → **0.88**.
+   FiLM conditioning is what restores (and improves) size discrimination, 0.00 → **0.91**.
 
 ## What the figures show
 
@@ -72,7 +77,7 @@ Two takeaways the demo makes concrete:
 `figures/bn_anticorrelation.png`
 - `global+BN` only: `running_var` (red, log, left axis) and eval MRR (blue, right axis) on one plot.
   Every running_var spike coincides with an MRR collapse and vice-versa — Pearson
-  `corr(log running_var, MRR) ≈ −0.77`. The clearest single view of the bug.
+  `corr(log running_var, MRR) ≈ −0.85`. The clearest single view of the bug.
 
 `figures/four_variants.png` (4 panels)
 - **running_var** (BN only): `global+BN` explodes/oscillates over orders of magnitude; nothing else has the buffer.
@@ -90,12 +95,14 @@ data. The `running_var` poisoning is the identical mechanism.
 
 ### A note on the demo's BN momentum
 
-To show the "spike then recover" checkpoint lottery inside a short (~700-step) run, the demo
-raises BatchNorm's `momentum` from PyTorch's default `0.1` to `0.35` (see `src/model.py`).
-With the default, a single outlier spike takes ~60 steps to decay — long enough to blanket a
-short run, making BN look *uniformly* bad. Real training survives the default precisely because
-checkpoints are thousands of steps apart, giving long clean windows for `running_var` to
-recover; the higher momentum reproduces that dynamic on the demo's compressed timescale.
+The demo uses PyTorch's **default** BatchNorm `momentum = 0.1` (see `src/model.py`) — no
+hand-tuning. The "spike then recover" checkpoint lottery is reproduced through the **data
+regime**, not the hyperparameter: rare, catastrophic scale outliers arrive with variable gaps
+(batches are sampled *with replacement*, so outlier spacing is Poisson-like) over a long-enough
+run (1600 steps, eval every 20). Some checkpoints land in long clean windows where `running_var`
+has decayed back to its true value (good eval); others land right after an outlier (poisoned →
+sharp drop). That mirrors the real run, where checkpoints are thousands of steps apart and the
+same rare-outlier-plus-slow-EMA dynamic produces the see-saw.
 
 ## Layout
 
@@ -103,12 +110,14 @@ recover; the higher momentum reproduces that dynamic on the demo's compressed ti
 src/data.py    synthetic shapes × sizes, outlier injection, precomputed "teacher" embeddings
 src/model.py   MiniPointEncoder: Group(FPS,kNN), BN|GN swap, global|unit_bb norm, Fourier+FiLM
 src/train.py   contrastive training; logs running_var / MRR / pcpc / size-margin each eval
-src/plots.py   the figures
-run_demo.py    trains all four variants and renders everything
+src/plots.py         the figures
+run_demo.py          trains all four variants and renders everything
+ablation_anchor.py   removes the color+bias anchor → global+GN's scale margin collapses to 0
+investigation_story.py  diffs adjacent checkpoints → the running_var weight-delta figure
 ```
 
 ## Caveats
 
-Single training run per variant (no error bars), synthetic data, a deliberately small encoder,
-and the tuned BN momentum above. It is a faithful *mechanism* reproduction and teaching tool,
-not a benchmark — for load-bearing claims, repeat across seeds and scales.
+Single training run per variant (no error bars), synthetic data, and a deliberately small
+encoder. It is a faithful *mechanism* reproduction and teaching tool, not a benchmark — for
+load-bearing claims, repeat across seeds and scales.

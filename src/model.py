@@ -60,12 +60,12 @@ class Group(nn.Module):
         return centers, feats
 
 
-# BN momentum is raised from PyTorch's default 0.1 to compress the running_var
-# recovery time into this short (~700-step) demo. The real run used 0.1 but saved
-# checkpoints 1000 steps apart, giving long clean windows for running_var to recover;
-# here, with eval every ~14 steps, a higher momentum reproduces that "spike then
-# recover" dynamic on the demo's timescale (shadow ~15 steps instead of ~60).
-BN_MOMENTUM = 0.35
+# PyTorch's default BatchNorm momentum. We deliberately keep the default rather than
+# hand-tuning it: the "spike then recover" checkpoint lottery is reproduced instead by
+# the *data* regime — rare, catastrophic scale outliers arriving with variable gaps
+# (with-replacement sampling) over a long-enough run (1600 steps, eval every 20), so
+# running_var spikes on a poisoned batch and decays back over the clean windows between.
+BN_MOMENTUM = 0.1   # real PyTorch default; slow EMA accumulation (the real regime)
 
 def norm1d(kind: str, c: int) -> nn.Module:
     if kind == "bn":
