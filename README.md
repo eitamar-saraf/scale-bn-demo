@@ -16,11 +16,12 @@ python run_demo.py            # ~a few minutes on CPU
 python run_demo.py --quick    # fast smoke run
 ```
 
-Outputs the figures in `figures/`. Two companion scripts add the rest:
+Outputs the figures in `figures/`. Three companion scripts add the rest:
 
 ```bash
-python ablation_anchor.py     # the leak ablation: remove the color+bias anchor
-python investigation_story.py # the checkpoint-diff "breakthrough" figure
+python symptom_selfcontained.py # smooth loss / spiky grad / see-sawing MRR (grad-accum)
+python ablation_anchor.py       # the leak ablation: remove the color+bias anchor
+python investigation_story.py   # the checkpoint-diff "breakthrough" figure
 ```
 
 ---
@@ -104,6 +105,19 @@ has decayed back to its true value (good eval); others land right after an outli
 sharp drop). That mirrors the real run, where checkpoints are thousands of steps apart and the
 same rare-outlier-plus-slow-EMA dynamic produces the see-saw.
 
+### Why the training loss stays smooth (grad accumulation)
+
+An obvious objection: if an outlier is in a training batch, shouldn't the *loss* spike too?
+`symptom_selfcontained.py` shows why it doesn't. It trains with **gradient accumulation**
+(`accum=12`, micro-batch `36`) — the small-scale analog of the real run's large effective
+batch (grad-accum / multi-GPU). Each micro-batch does its own BatchNorm-train forward, so an
+outlier micro-batch still poisons `running_var` at full strength via the EMA; but its gradient
+is averaged `1/accum` into the optimizer step, so the **window-averaged loss barely moves**.
+Empirically the logged loss has **0 spikes** (max/median ≈ 1.4×) while eval still see-saws
+(`corr(log running_var, MRR) ≈ −0.84`). The averaging dilutes the outlier's *gradient*; it does
+not dilute its effect on the *buffer*. That asymmetry is the whole reason the loss looks healthy
+while eval collapses — and it's why the bug is so easy to miss.
+
 ## Layout
 
 ```
@@ -114,6 +128,7 @@ src/plots.py         the figures
 run_demo.py          trains all four variants and renders everything
 ablation_anchor.py   removes the color+bias anchor → global+GN's scale margin collapses to 0
 investigation_story.py  diffs adjacent checkpoints → the running_var weight-delta figure
+symptom_selfcontained.py  grad-accum run → smooth loss + spiky grad + see-sawing MRR
 ```
 
 ## Caveats

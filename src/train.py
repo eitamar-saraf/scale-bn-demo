@@ -53,7 +53,7 @@ def evaluate(model, eval_pts, eval_fam, eval_size, teacher, size_pairs, device):
 def train_variant(cfg, n_items=3072, steps=700, batch=48, eval_every=20,
                   lr=2e-3, seed=0, device="cpu", log=print,
                   n_points=768, outlier_frac=0.00015, outlier_mult=(30.0, 6000.0),
-                  snapshot=False):
+                  snapshot=False, accum=1):
     torch.manual_seed(seed); np.random.seed(seed)
     ds = ShapeDataset(n_items=n_items, n_points=n_points, outlier_frac=outlier_frac,
                       outlier_mult=outlier_mult, seed=seed, with_outliers=True)
@@ -88,27 +88,39 @@ def train_variant(cfg, n_items=3072, steps=700, batch=48, eval_every=20,
     hist["loss_step"] = []; hist["grad_step"] = []
     snaps = {}                                            # step -> cpu state_dict copy (if snapshot)
     for step in range(1, steps + 1):
-        idx = torch.randint(0, len(ds), (batch,), generator=rng_b)   # WITH replacement
-        pts = pts_all[idx]; size = size_all[idx]; fam = fam_all[idx]
-        emb = model(pts, torch.log(size))
-        T = teacher.embed(fam.numpy(), size.cpu().numpy()).to(device)
-        loss = clip_loss(emb, T)
-        opt.zero_grad(); loss.backward()
+        # One optimizer step = `accum` micro-batches. Each micro-batch does its own
+        # BN-train forward (so an outlier micro-batch still poisons running_var via the
+        # EMA), but its gradient is averaged into the accumulated step — so a single
+        # outlier's gradient impact is diluted 1/accum and the *logged* (window-mean)
+        # loss barely moves. This is the real run's mechanism at small scale: large
+        # effective batch (grad-accum / multi-GPU) => smooth loss, poisoned buffer.
+        opt.zero_grad()
+        micro_losses = []; n_out = 0
+        for _m in range(accum):
+            idx = torch.randint(0, len(ds), (batch,), generator=rng_b)   # WITH replacement
+            pts = pts_all[idx]; size = size_all[idx]; fam = fam_all[idx]
+            emb = model(pts, torch.log(size))
+            T = teacher.embed(fam.numpy(), size.cpu().numpy()).to(device)
+            loss_m = clip_loss(emb, T)
+            (loss_m / accum).backward()
+            micro_losses.append(float(loss_m.item()))
+            n_out += int(torch.from_numpy(ds.is_outlier)[idx].sum())
         gnorm = float(torch.sqrt(sum(p.grad.detach().pow(2).sum() for p in model.parameters()
                                      if p.grad is not None)).item())
         opt.step()
-        hist["loss_step"].append(float(loss.item())); hist["grad_step"].append(gnorm)
+        loss = float(np.mean(micro_losses))                 # window-averaged (what you'd log/plot)
+        hist["loss_step"].append(loss); hist["grad_step"].append(gnorm)
         if step % eval_every == 0 or step == 1:
             mrr, pcpc, sm = evaluate(model, eval_pts, eval_fam, eval_size, teacher, size_pairs, device)
             rv = float("nan")
             if cfg["norm_layer"] == "bn":
                 rv = model.first_conv[1].running_var.mean().item()
-            b_out = float(torch.from_numpy(ds.is_outlier)[idx].float().mean())
+            b_out = n_out / float(accum * batch)
             for k, v in zip(["step", "bn_running_var", "mrr", "pcpc", "size_margin", "batch_outlier", "loss"],
-                            [step, rv, mrr, pcpc, sm, b_out, float(loss.item())]):
+                            [step, rv, mrr, pcpc, sm, b_out, loss]):
                 hist[k].append(v)
             if snapshot:
                 snaps[step] = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
-            log(f"  step {step:4d}  loss {loss.item():.3f}  rv {rv:>10.3e}  "
+            log(f"  step {step:4d}  loss {loss:.3f}  rv {rv:>10.3e}  "
                 f"MRR {mrr:.3f}  pcpc {pcpc:.3f}  size_margin {sm:.4f}")
     return (hist, model, snaps) if snapshot else (hist, model)
