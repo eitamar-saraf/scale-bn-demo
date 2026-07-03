@@ -22,6 +22,7 @@ Outputs the figures in `figures/`. Three companion scripts add the rest:
 python symptom_selfcontained.py # smooth loss / spiky grad / see-sawing MRR (grad-accum)
 python ablation_anchor.py       # the leak ablation: remove the color+bias anchor
 python investigation_story.py   # the checkpoint-diff "breakthrough" figure
+python dissect_outlier_step.py  # per-micro-batch receipts for one poisoned step
 ```
 
 ---
@@ -108,15 +109,24 @@ same rare-outlier-plus-slow-EMA dynamic produces the see-saw.
 ### Why the training loss stays smooth (grad accumulation)
 
 An obvious objection: if an outlier is in a training batch, shouldn't the *loss* spike too?
-`symptom_selfcontained.py` shows why it doesn't. It trains with **gradient accumulation**
-(`accum=12`, micro-batch `36`) — the small-scale analog of the real run's large effective
-batch (grad-accum / multi-GPU). Each micro-batch does its own BatchNorm-train forward, so an
-outlier micro-batch still poisons `running_var` at full strength via the EMA; but its gradient
-is averaged `1/accum` into the optimizer step, so the **window-averaged loss barely moves**.
-Empirically the logged loss has **0 spikes** (max/median ≈ 1.4×) while eval still see-saws
-(`corr(log running_var, MRR) ≈ −0.84`). The averaging dilutes the outlier's *gradient*; it does
-not dilute its effect on the *buffer*. That asymmetry is the whole reason the loss looks healthy
-while eval collapses — and it's why the bug is so easy to miss.
+`symptom_selfcontained.py` shows why it doesn't, via two mechanisms working together:
+
+1. **The poisoned micro-batch's loss is capped.** In train mode BatchNorm normalizes the batch
+   by its own (huge) variance, and embeddings are L2-normalized before the contrastive loss —
+   so a collapsed micro-batch scores roughly *chance level* (`ln(batch) ≈ 3.6`), never
+   something astronomical.
+2. **Gradient accumulation dilutes what's left.** With `accum=12`, micro-batch `36` (the
+   small-scale analog of the real run's large effective batch), the capped bump is averaged
+   `1/accum` into the optimizer step.
+
+BatchNorm's buffer gets neither protection: statistics are computed per micro-batch and
+absorbed into `running_var` at full strength. `dissect_outlier_step.py` prints the receipts
+for one poisoned step: outlier micro-loss 3.73 (≈ `ln 36`), logged window mean 1.46 vs run
+median 1.23 (below the clean-step noise max of 1.68), grad-norm ×1.3 — while `running_var`
+jumps 0.031 → 34.3 (**×1,100 in one update**: `0.9·0.031 + 0.1·343`) and eval MRR lands at
+chance (0.024). Across the whole run the logged loss has **0 spikes** while
+`corr(log running_var, MRR) ≈ −0.84`. The loss path is capped then diluted; the buffer path
+is neither — that asymmetry is why the bug is so easy to miss.
 
 ## Layout
 
@@ -129,6 +139,8 @@ run_demo.py          trains all four variants and renders everything
 ablation_anchor.py   removes the color+bias anchor → global+GN's scale margin collapses to 0
 investigation_story.py  diffs adjacent checkpoints → the running_var weight-delta figure
 symptom_selfcontained.py  grad-accum run → smooth loss + spiky grad + see-sawing MRR
+dissect_outlier_step.py   instruments one poisoned optimizer step: micro-batch losses,
+                          window mean, running_var jump, eval MRR — the numeric receipts
 ```
 
 ## Caveats
