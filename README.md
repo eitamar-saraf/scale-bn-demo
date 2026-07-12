@@ -31,7 +31,7 @@ python dissect_outlier_step.py  # per-micro-batch receipts for one poisoned step
 
 The point clouds are normalized by a **single dataset-wide divisor** (so that a 3 mm part and
 a 4 mm part stay distinguishable — absolute scale is a feature). But that divisor has **no
-per-sample clamp**, so a giant outlier (a meter-scale building, or a unit-error upload) keeps
+per-sample clamp**, so a giant outlier (a meter-scale building, or a unit-error model) keeps
 enormous coordinates after "normalization". The first conv layer turns that into enormous
 activations, and `BatchNorm`'s `running_var` — an EMA of per-batch variance, **not** gradient-driven —
 absorbs the spike. The loss never moves (BN renormalizes within the batch), but at eval time
